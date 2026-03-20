@@ -3,7 +3,7 @@ local cfg = {
 }
 
 local CONFIG_DIR = "WeaponPoseFix/"
-local IN_HAND_THRESHOLD = 0.01    -- LocalPosition magnitude 小于此值视为在手
+local IN_HAND_THRESHOLD = 0.011   -- LocalPosition 各分量与偏移量之差小于此值视为在手
 
 -- 供其他脚本读取的全局武器状态
 -- 用法: WeaponPoseFix.active_weapon["Grace"]  →  "Pistol" / "Melee" / nil
@@ -24,7 +24,6 @@ local characters = {
         name = "Grace",
         go_name = "cp_A100",
         enabled = true,
-        always_apply = true,
         fix_count = 0,
         status = "Waiting...",
         found_arms = {},
@@ -32,7 +31,6 @@ local characters = {
         initialized = false,
         suspended = false,
         arm_states = {},
-        _r_hand_joint = nil,
         rules = {
             { prefix = "arm00", x = 0.0, y = 0.0, z = 0.0, label = "Pistol" },
             { prefix = "arm02", x = 0.0,   y = 0.0, z = 0.0,  label = "Grenade"  },
@@ -52,7 +50,6 @@ local characters = {
         name = "Leon",
         go_name = "cp_A000",
         enabled = true,
-        always_apply = false,
         fix_count = 0,
         status = "Waiting...",
         found_arms = {},
@@ -60,7 +57,6 @@ local characters = {
         initialized = false,
         suspended = false,
         arm_states = {},
-        _r_hand_joint = nil,
         rules = {
 
             { prefix = "arm00", x = 0.0, y = 0.0, z = 0.0, label = "Pistol" },
@@ -327,22 +323,12 @@ local function recheck_states(char)
     if not cp_transform then return end
     local arms = collect_arm_transforms(cp_transform)
 
+    -- 只对已经是 in_hand 的 arm 重新写入新偏移，不重新判断状态
     for _, arm in ipairs(arms) do
-        local rule = get_rule(char, arm.name)
-        if rule then
-            local pos = nil
-            pcall(function() pos = arm.transform:call("get_LocalPosition") end)
-            if pos then
-                local mag = math.sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z)
-                local state = char.arm_states[arm.name] or "unknown"
-                if state == "in_hand" then
-                    pcall(function() arm.transform:call("set_LocalPosition", Vector3f.new(rule.x, rule.y, rule.z)) end)
-                elseif mag < IN_HAND_THRESHOLD then
-                    char.arm_states[arm.name] = "in_hand"
-                    pcall(function() arm.transform:call("set_LocalPosition", Vector3f.new(rule.x, rule.y, rule.z)) end)
-                else
-                    char.arm_states[arm.name] = "stored"
-                end
+        if char.arm_states[arm.name] == "in_hand" then
+            local rule = get_rule(char, arm.name)
+            if rule then
+                pcall(function() arm.transform:call("set_LocalPosition", Vector3f.new(rule.x, rule.y, rule.z)) end)
             end
         end
     end
@@ -360,25 +346,17 @@ local function apply_fix(char)
         char.status = "Not in scene"
         char.initialized = false
         char.arm_states = {}
-        char._r_hand_joint = nil
-        return
+            return
     end
 
     -- 检测角色是否被挂到其他物体下（如电梯）
-    local t_check = nil
-    pcall(function() t_check = go:call("get_Transform") end)
-    if t_check then
-        local parent = nil
-        pcall(function() parent = t_check:call("get_Parent") end)
-        if parent then
-            char.suspended = true
-            char.status = "Suspended (attached to object)"
-            char.initialized = false
-            char.arm_states = {}
-            return
-        end
+    -- suspended 已在 on_frame 每帧更新，这里直接读取
+    if char.suspended then
+        char.status = "Suspended (attached to object)"
+        char.initialized = false
+        char.arm_states = {}
+        return
     end
-    char.suspended = false
 
     local ok_t, cp_transform = pcall(function() return go:call("get_Transform") end)
     if not ok_t or not cp_transform then char.status = "No Transform"; return end
@@ -398,52 +376,42 @@ local function apply_fix(char)
     local stored_count = 0
     local skipped_count = 0
 
-    -- 偏移模块
+    -- 偏移模块：lp=(0,0,0) 且 DrawSelf=true → in_hand，写偏移
     for _, arm in ipairs(arms) do
         local rule = get_rule(char, arm.name)
         if rule then
-            if char.always_apply then
-                -- Grace：无条件写入偏移，不需要判断在手
-                pcall(function() arm.transform:call("set_LocalPosition", Vector3f.new(rule.x, rule.y, rule.z)) end)
-                char.arm_states[arm.name] = "in_hand"
-                table.insert(char.found_arms, string.format("[%s][always] %s", rule.label, arm.name))
-                active_count = active_count + 1
-            else
-                -- Leon：用 LocalPosition magnitude 判断武器是否在手
-                local pos = nil
+            local pos = nil
                 pcall(function() pos = arm.transform:call("get_LocalPosition") end)
                 if not pos then
                     skipped_count = skipped_count + 1
                 else
-                    local mag = math.sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z)
-                    local state = char.arm_states[arm.name] or "unknown"
+                    local draw_self = false
+                    local cgo = nil
+                    pcall(function() cgo = arm.transform:call("get_GameObject") end)
+                    if cgo then
+                        pcall(function() draw_self = cgo:call("get_DrawSelf") end)
+                    end
 
-                    if state == "in_hand" then
-                        local still_ours = (math.abs(pos.x-rule.x)<0.01 and math.abs(pos.y-rule.y)<0.01 and math.abs(pos.z-rule.z)<0.01)
-                        local is_zero = mag < IN_HAND_THRESHOLD
-                        if not still_ours and not is_zero then
-                            char.arm_states[arm.name] = "stored"
-                            table.insert(char.found_arms, string.format("[%s][stored] %s", rule.label, arm.name))
-                            stored_count = stored_count + 1
-                        else
-                            pcall(function() arm.transform:call("set_LocalPosition", Vector3f.new(rule.x, rule.y, rule.z)) end)
-                            table.insert(char.found_arms, string.format("[%s][IN HAND] %s", rule.label, arm.name))
-                            active_count = active_count + 1
-                        end
+                    local near_zero = math.abs(pos.x) < IN_HAND_THRESHOLD and
+                        math.abs(pos.y) < IN_HAND_THRESHOLD and
+                        math.abs(pos.z) < IN_HAND_THRESHOLD
+                    local near_rule = math.abs(pos.x - rule.x) < IN_HAND_THRESHOLD and
+                        math.abs(pos.y - rule.y) < IN_HAND_THRESHOLD and
+                        math.abs(pos.z - rule.z) < IN_HAND_THRESHOLD
+                    local in_hand = draw_self and (near_zero or near_rule)
+
+                    if in_hand then
+                        char.arm_states[arm.name] = "in_hand"
+                        pcall(function() arm.transform:call("set_LocalPosition", Vector3f.new(rule.x, rule.y, rule.z)) end)
+                        table.insert(char.found_arms, string.format("[%s][IN HAND] %s", rule.label, arm.name))
+                        active_count = active_count + 1
                     else
-                        if mag < IN_HAND_THRESHOLD then
-                            char.arm_states[arm.name] = "in_hand"
-                            pcall(function() arm.transform:call("set_LocalPosition", Vector3f.new(rule.x, rule.y, rule.z)) end)
-                            table.insert(char.found_arms, string.format("[%s][IN HAND] %s", rule.label, arm.name))
-                            active_count = active_count + 1
-                        else
-                            char.arm_states[arm.name] = "stored"
-                            table.insert(char.found_arms, string.format("[%s][stored] %s", rule.label, arm.name))
-                            stored_count = stored_count + 1
-                        end
+                        char.arm_states[arm.name] = "stored"
+                        table.insert(char.found_arms, string.format("[%s][stored] %s (pos=%.3f,%.3f,%.3f draw=%s)",
+                            rule.label, arm.name, pos.x, pos.y, pos.z, tostring(draw_self)))
+                        stored_count = stored_count + 1
                     end
                 end
-            end
         else
             table.insert(char.found_arms, string.format("[--] %s (no rule)", arm.name))
             skipped_count = skipped_count + 1
@@ -454,55 +422,18 @@ local function apply_fix(char)
     char.status = string.format("In hand: %d, stored: %d, skipped: %d (fixes: %d)",
         active_count, stored_count, skipped_count, char.fix_count)
 
-    -- 武器输出模块：复用 arm_states，多个 in_hand 时才读世界坐标取最近的
-    local in_hand_arms = {}
+    -- 武器输出模块：直接从 arm_states 读，DrawSelf 已保证只有一个 in_hand
+    local active_weapon = nil
     for _, arm in ipairs(arms) do
         if char.arm_states[arm.name] == "in_hand" then
             local rule = get_rule(char, arm.name)
-            if rule then table.insert(in_hand_arms, { arm = arm, rule = rule }) end
-        end
-    end
-
-    local active_weapon = nil
-    if #in_hand_arms == 1 then
-        active_weapon = in_hand_arms[1].rule.label
-    elseif #in_hand_arms > 1 then
-        -- 多个 in_hand：读一次 R_Arm_Hand 世界坐标，取最近的
-        local rj = char._r_hand_joint
-        if not rj then
-            local ok, j = pcall(cp_transform.call, cp_transform, "getJointByName", "R_Arm_Hand")
-            if ok and j then char._r_hand_joint = j; rj = j end
-        end
-        if rj then
-            local ok, rp = pcall(rj.call, rj, "get_Position")
-            if ok and rp then
-                local best_dist = math.huge
-                for _, entry in ipairs(in_hand_arms) do
-                    local wp = nil
-                    pcall(function() wp = entry.arm.transform:call("get_Position") end)
-                    if wp then
-                        local dx = wp.x-rp.x; local dy = wp.y-rp.y; local dz = wp.z-rp.z
-                        local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-                        if dist < best_dist then
-                            best_dist = dist
-                            active_weapon = entry.rule.label
-                        end
-                    end
-                end
-            else
-                char._r_hand_joint = nil
+            if rule then
+                active_weapon = rule.label
+                break
             end
         end
-        if not active_weapon then
-            active_weapon = in_hand_arms[1].rule.label
-        end
     end
-    -- Grace 不挂载武器，武器输出永远为 nil
-    if char.always_apply then
-        WeaponPoseFix.active_weapon[char.name] = nil
-    else
-        WeaponPoseFix.active_weapon[char.name] = active_weapon
-    end
+    WeaponPoseFix.active_weapon[char.name] = active_weapon
 end
 
 local function restore_char(char)
@@ -527,7 +458,6 @@ local function restore_char(char)
     char.initialized = false
     char.arm_states = {}
     char.found_arms = {}
-    char._r_hand_joint = nil
     char.flashlight.root_joint = nil
     char.flashlight.status = "Disabled"
     char.status = "Disabled"
