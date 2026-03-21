@@ -1,4 +1,4 @@
--- LHandIKForceEnable.lua  v2.1
+-- LHandIKForceEnable.lua  v2.3
 -- Fix Hand offset issue after skeleton modification in RE9
 --      by forcing keep AnimLHandAdjustIK's LocalEnable=1, LocalDisable=0
 -- Support characters: cp_A100 (Grace), cp_A000 (Leon)
