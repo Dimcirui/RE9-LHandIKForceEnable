@@ -772,23 +772,29 @@ re.on_draw_ui(function()
 
                 -- Per-weapon distance thresholds (Leon only)
                 if char.weapon_distance_thresholds then
-                    local weapon_order = { "Pistol", "Shotgun", "Grenade", "Melee", "Magnum", "SMG", "Sniper" }
-                    local current_weapon = WeaponPoseFix and WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name]
-                    imgui.separator()
-                    imgui.text("Per-Weapon Distance Threshold:")
-                    for _, wname in ipairs(weapon_order) do
-                        if char.weapon_distance_thresholds[wname] ~= nil then
-                            local label = (wname == current_weapon) and (wname .. " [active]") or wname
-                            local changed_wt, new_wt = imgui.slider_float(
-                                label .. "##wdt_" .. char.name,
-                                char.weapon_distance_thresholds[wname],
-                                0.01, 0.5, "%.3f")
-                            if changed_wt then
-                                char.weapon_distance_thresholds[wname] = new_wt
-                                char._dist_cache = {}
-                                save_char_config(char)
+                    if WeaponPoseFix then
+                        local weapon_order = { "Pistol", "Shotgun", "Grenade", "Melee", "Magnum", "SMG", "Sniper" }
+                        local current_weapon = WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name]
+                        imgui.separator()
+                        imgui.text("Per-Weapon Distance Threshold:")
+                        for _, wname in ipairs(weapon_order) do
+                            if char.weapon_distance_thresholds[wname] ~= nil then
+                                local label = (wname == current_weapon) and (wname .. " [active]") or wname
+                                local changed_wt, new_wt = imgui.slider_float(
+                                    label .. "##wdt_" .. char.name,
+                                    char.weapon_distance_thresholds[wname],
+                                    0.01, 0.5, "%.3f")
+                                if changed_wt then
+                                    char.weapon_distance_thresholds[wname] = new_wt
+                                    char._dist_cache = {}
+                                    save_char_config(char)
+                                end
                             end
                         end
+                    else
+                        imgui.separator()
+                        imgui.text_colored("Install 'WeaponPoseFix' script to unlock", 0xFF888888)
+                        imgui.text_colored("per-weapon distance thresholds.", 0xFF888888)
                     end
                 end
 
