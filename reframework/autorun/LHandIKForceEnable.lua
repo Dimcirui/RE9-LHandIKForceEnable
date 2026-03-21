@@ -1,4 +1,4 @@
--- LHandIKForceEnable.lua  v2.2
+-- LHandIKForceEnable.lua  v2.1
 -- Fix Hand offset issue after skeleton modification in RE9
 --      by forcing keep AnimLHandAdjustIK's LocalEnable=1, LocalDisable=0
 -- Support characters: cp_A100 (Grace), cp_A000 (Leon)
@@ -222,10 +222,20 @@ local characters = {
             { { layer = 5, mot = 6102 } },                 -- 治疗针/切武器 syringe/switch weapon
             { { layer = 3, bank = 0, mot = "invalid" } }   -- 过场动画 cutscene
         },
+        default_weapon_distance_thresholds = {
+            Pistol  = 0.07,
+            Shotgun = 0.35,
+            Grenade = 0.07,
+            Melee   = 0.07,
+            Magnum  = 0.07,
+            SMG     = 0.285,
+            Sniper  = 0.35,
+        },
         char_enabled = true,
         distance_threshold = 0.07,
         distance_interval = 0.1,
         distance_sustain = true,
+        weapon_distance_thresholds = nil,  -- populated by load_char_config
         conditions = nil, kill_conditions = nil,
         status = "Waiting...", fix_count = 0, ik_forced = false, active_condition_str = "None",
         config_source = "default",
@@ -266,6 +276,13 @@ local function load_char_config(char)
         if data.distance_sustain ~= nil then char.distance_sustain = data.distance_sustain end
         if data.conditions ~= nil then char.conditions = normalise_conditions(data.conditions) end
         if data.kill_conditions ~= nil then char.kill_conditions = data.kill_conditions end
+        if data.weapon_distance_thresholds ~= nil and char.weapon_distance_thresholds then
+            for k, v in pairs(data.weapon_distance_thresholds) do
+                if type(v) == "number" then
+                    char.weapon_distance_thresholds[k] = v
+                end
+            end
+        end
         char.config_source = filename
         log.info(string.format("[IK Fix] Config loaded for %s from %s", char.name, filename))
     else
@@ -275,6 +292,12 @@ local function load_char_config(char)
         char.distance_sustain = char.default_distance_sustain
         char.conditions = char.default_conditions
         char.kill_conditions = char.default_kill_conditions
+        if char.default_weapon_distance_thresholds then
+            char.weapon_distance_thresholds = {}
+            for k, v in pairs(char.default_weapon_distance_thresholds) do
+                char.weapon_distance_thresholds[k] = v
+            end
+        end
         char.config_source = "default"
     end
     if not char.conditions then char.conditions = char.default_conditions end
@@ -288,6 +311,7 @@ local function save_char_config(char)
         distance_threshold = char.distance_threshold,
         distance_interval = char.distance_interval,
         distance_sustain = char.distance_sustain,
+        weapon_distance_thresholds = char.weapon_distance_thresholds,
         conditions = char.conditions,
         kill_conditions = char.kill_conditions,
     })
@@ -403,6 +427,19 @@ local function match_conditions(layers, conditions)
 end
 
 ------------------------------------------------------
+-- Core: Per-weapon distance threshold
+------------------------------------------------------
+local function get_active_threshold(char)
+    if char.weapon_distance_thresholds then
+        local weapon = WeaponPoseFix and WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name]
+        if weapon and char.weapon_distance_thresholds[weapon] then
+            return char.weapon_distance_thresholds[weapon]
+        end
+    end
+    return char.distance_threshold
+end
+
+------------------------------------------------------
 -- Core: Distance measurement (cached)
 ------------------------------------------------------
 local function ensure_transform(char, go)
@@ -456,7 +493,7 @@ local function check_distance(char, go, group_id)
     end
     local dist = measure_distance(char, go)
     if dist == nil then return nil, nil end
-    local result = dist < char.distance_threshold
+    local result = dist < get_active_threshold(char)
     char._dist_cache[group_id] = { time = now, distance = dist, result = result }
     return result, dist
 end
@@ -566,11 +603,11 @@ local function check_conditional(char, go)
                     active = false
                     -- 标记为 -1，表示保护期已用完，避免下一帧无限重复触发
                     char._dist_grace_end = -1
-                    dist_info = string.format(" (dist: %.3fm >= %.3f)", dist, char.distance_threshold)
+                    dist_info = string.format(" (dist: %.3fm >= %.3f)", dist, get_active_threshold(char))
                 end
             else
                 active = false
-                dist_info = string.format(" (dist: %.3fm >= %.3f)", dist, char.distance_threshold)
+                dist_info = string.format(" (dist: %.3fm >= %.3f)", dist, get_active_threshold(char))
             end
         end
     end
@@ -589,7 +626,7 @@ local function check_conditional(char, go)
         else
             -- 手远离了，撤销IK
             active = false
-            dist_info = string.format(" (sustain lost: %.3fm >= %.3f)", dist, char.distance_threshold)
+            dist_info = string.format(" (sustain lost: %.3fm >= %.3f)", dist, get_active_threshold(char))
         end
     end
 
@@ -731,6 +768,28 @@ re.on_draw_ui(function()
 
                 if char.distance_sustain then
                     imgui.text("[distance_sustain: ON]")
+                end
+
+                -- Per-weapon distance thresholds (Leon only)
+                if char.weapon_distance_thresholds then
+                    local weapon_order = { "Pistol", "Shotgun", "Grenade", "Melee", "Magnum", "SMG", "Sniper" }
+                    local current_weapon = WeaponPoseFix and WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name]
+                    imgui.separator()
+                    imgui.text("Per-Weapon Distance Threshold:")
+                    for _, wname in ipairs(weapon_order) do
+                        if char.weapon_distance_thresholds[wname] ~= nil then
+                            local label = (wname == current_weapon) and (wname .. " [active]") or wname
+                            local changed_wt, new_wt = imgui.slider_float(
+                                label .. "##wdt_" .. char.name,
+                                char.weapon_distance_thresholds[wname],
+                                0.01, 0.5, "%.3f")
+                            if changed_wt then
+                                char.weapon_distance_thresholds[wname] = new_wt
+                                char._dist_cache = {}
+                                save_char_config(char)
+                            end
+                        end
+                    end
                 end
 
                 if cfg.debug then
