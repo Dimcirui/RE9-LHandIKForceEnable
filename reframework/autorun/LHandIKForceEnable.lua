@@ -180,21 +180,29 @@ local characters = {
                 },
             },
             {
+                -- 霰弹枪上膛、一发后；
+                checks = {
+                    { layer = 3, bank = 10, mot = 5000},
+                    { layer = 4, bank = 10, mot = 5010},
+                },
+            },
+            {
                 -- 待机过渡/切枪过渡/取消瞄准过渡/闲置检视动画等 (L3.bank=100)
                 -- Transition frames/Switch weapon frames/Cancel aiming frames/Idle inspection animation frames (L3.bank=100)
                 checks = {
                     { layer = 3, bank = 100 },
+                    { layer = 3, bank = 100, mot = 1200, _invert = true}
                 },
             },
-            {
-                -- 冲突组: 持枪/非持枪通用，靠距离检测区分
-                -- Conflict group: General holding/non-holding, distinguished by distance detection
-                checks = {
-                    { layer = 3, bank = 10, mot = 5000 },
-                    { layer = 4, bank = 100, mot = 6000 },
-                },
-                distance_check = true,
-            },
+            -- {
+            --     -- 冲突组: 持枪/非持枪通用，靠距离检测区分
+            --     -- Conflict group: General holding/non-holding, distinguished by distance detection
+            --     checks = {
+            --         { layer = 3, bank = 10, mot = 5000 },
+            --         { layer = 4, bank = 100, mot = 6000 },
+            --     },
+            --     distance_check = true,
+            -- },
             -- 一些不容易归类的闲置动作，由于它们结束时衔接持枪待机动作，所以也需要逐条完整加入
             -- Some idle animations that are difficult to classify, because they are connected to the gun holding idle animation at the end, so they also need to be added one by one
             {
@@ -224,12 +232,12 @@ local characters = {
         },
         default_weapon_distance_thresholds = {
             Pistol  = 0.07,
-            Shotgun = 0.35,
-            Grenade = 0.07,
-            Melee   = 0.07,
+            Shotgun = 0.327,
+            Grenade = 0.0,
+            Melee   = 0.0,
             Magnum  = 0.07,
-            SMG     = 0.285,
-            Sniper  = 0.35,
+            SMG     = 0.275,
+            Sniper  = 0.327,
         },
         char_enabled = true,
         distance_threshold = 0.07,
@@ -276,10 +284,20 @@ local function load_char_config(char)
         if data.distance_sustain ~= nil then char.distance_sustain = data.distance_sustain end
         if data.conditions ~= nil then char.conditions = normalise_conditions(data.conditions) end
         if data.kill_conditions ~= nil then char.kill_conditions = data.kill_conditions end
-        if data.weapon_distance_thresholds ~= nil and char.weapon_distance_thresholds then
-            for k, v in pairs(data.weapon_distance_thresholds) do
-                if type(v) == "number" then
+        if data.weapon_distance_thresholds ~= nil then
+            -- 先从 defaults 建表（若还未初始化）
+            if not char.weapon_distance_thresholds and char.default_weapon_distance_thresholds then
+                char.weapon_distance_thresholds = {}
+                for k, v in pairs(char.default_weapon_distance_thresholds) do
                     char.weapon_distance_thresholds[k] = v
+                end
+            end
+            -- 再用 JSON 里的值覆盖
+            if char.weapon_distance_thresholds then
+                for k, v in pairs(data.weapon_distance_thresholds) do
+                    if type(v) == "number" then
+                        char.weapon_distance_thresholds[k] = v
+                    end
                 end
             end
         end
