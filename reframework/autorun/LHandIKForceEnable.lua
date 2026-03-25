@@ -239,6 +239,15 @@ local characters = {
             SMG     = 0.275,
             Sniper  = 0.327,
         },
+        arm_weapon_map = {
+            { prefix = "arm00", label = "Pistol"  },
+            { prefix = "arm01", label = "Shotgun" },
+            { prefix = "arm02", label = "Grenade" },
+            { prefix = "arm03", label = "Melee"   },
+            { prefix = "arm04", label = "Magnum"  },
+            { prefix = "arm05", label = "SMG"     },
+            { prefix = "arm06", label = "Sniper"  },
+        },
         char_enabled = true,
         distance_threshold = 0.07,
         distance_interval = 0.1,
@@ -248,7 +257,8 @@ local characters = {
         status = "Waiting...", fix_count = 0, ik_forced = false, active_condition_str = "None",
         config_source = "default",
         _transform = nil, _joints = {}, _dist_cache = {}, _go_ref = nil,
-        _ik_item = nil, _layer_cache = {}, _layer_count = 0
+        _ik_item = nil, _layer_cache = {}, _layer_count = 0,
+        _arm_cache = nil, _weapon_check_time = -999, _detected_weapon = nil
     },
 }
 
@@ -320,6 +330,12 @@ local function load_char_config(char)
     end
     if not char.conditions then char.conditions = char.default_conditions end
     if not char.kill_conditions then char.kill_conditions = char.default_kill_conditions end
+    if not char.weapon_distance_thresholds and char.default_weapon_distance_thresholds then
+        char.weapon_distance_thresholds = {}
+        for k, v in pairs(char.default_weapon_distance_thresholds) do
+            char.weapon_distance_thresholds[k] = v
+        end
+    end
 end
 
 local function save_char_config(char)
@@ -445,12 +461,74 @@ local function match_conditions(layers, conditions)
 end
 
 ------------------------------------------------------
+-- Core: Built-in weapon detection (reads DrawSelf only, no writes)
+------------------------------------------------------
+local WEAPON_DETECT_INTERVAL = 0.5
+
+local function update_detected_weapon(char)
+    if not char.arm_weapon_map then return end
+    local now = os.clock()
+    if now - char._weapon_check_time < WEAPON_DETECT_INTERVAL then return end
+    char._weapon_check_time = now
+
+    local t = char._transform
+    if not t then return end
+
+    -- Build or validate arm cache
+    if not char._arm_cache then
+        local arms = {}
+        local ok, child = pcall(function() return t:call("get_Child") end)
+        if not ok or not child then return end
+        while child do
+            local ok_go, cgo = pcall(function() return child:call("get_GameObject") end)
+            if ok_go and cgo then
+                local ok_n, n = pcall(function() return cgo:call("get_Name") end)
+                if ok_n and n and n:sub(1, 3) == "arm" then
+                    table.insert(arms, { name = n, go = cgo, transform = child })
+                end
+            end
+            local ok_nx, nx = pcall(function() return child:call("get_Next") end)
+            if not ok_nx or not nx then break end
+            child = nx
+        end
+        char._arm_cache = arms
+    end
+
+    local IN_HAND_THRESHOLD = 0.011
+    local detected = nil
+    for _, arm in ipairs(char._arm_cache) do
+        for _, rule in ipairs(char.arm_weapon_map) do
+            if arm.name:sub(1, #rule.prefix) == rule.prefix then
+                local draw_self = false
+                local ok_ds = pcall(function() draw_self = arm.go:call("get_DrawSelf") end)
+                if not ok_ds then char._arm_cache = nil; return end
+                if draw_self then
+                    local pos = nil
+                    local ok_p = pcall(function() pos = arm.transform:call("get_LocalPosition") end)
+                    if not ok_p then char._arm_cache = nil; return end
+                    if pos and math.abs(pos.x) < IN_HAND_THRESHOLD
+                           and math.abs(pos.y) < IN_HAND_THRESHOLD
+                           and math.abs(pos.z) < IN_HAND_THRESHOLD then
+                        detected = rule.label
+                    end
+                end
+                break
+            end
+        end
+        if detected then break end
+    end
+    char._detected_weapon = detected
+end
+
+------------------------------------------------------
 -- Core: Per-weapon distance threshold
 ------------------------------------------------------
 local function get_active_threshold(char)
     if char.weapon_distance_thresholds then
-        local weapon = WeaponPoseFix and WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name]
-        if weapon and char.weapon_distance_thresholds[weapon] then
+        local weapon = (WeaponPoseFix and WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name])
+                    or char._detected_weapon
+                    or char._last_weapon
+        if weapon and char.weapon_distance_thresholds[weapon] ~= nil then
             return char.weapon_distance_thresholds[weapon]
         end
     end
@@ -463,6 +541,7 @@ end
 local function ensure_transform(char, go)
     if char._go_ref and char._go_ref ~= go then
         char._transform = nil; char._joints = {}; char._dist_cache = {}; char._ik_item = nil
+        char._arm_cache = nil; char._detected_weapon = nil
     end
     char._go_ref = go
     if char._transform then
@@ -657,11 +736,16 @@ local function check_conditional(char, go)
         local changed = set_ik_state(item, 1, 0)
         if changed then char.fix_count = char.fix_count + 1 end
         char.ik_forced = true
+        if char.weapon_distance_thresholds and WeaponPoseFix then
+            local w = WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name]
+            if w then char._last_weapon = w end
+        end
         char.status = string.format("Active, IK ON (fixes: %d)%s", char.fix_count, dist_info)
     else
         if char.ik_forced then
             set_ik_state(item, 0, 1)
             char.ik_forced = false
+            char._last_weapon = nil
         end
         char.status = "Idle, IK OFF" .. dist_info
     end
@@ -711,6 +795,9 @@ re.on_frame(function()
             
             if go then
                 pcall(check_conditional, char, go)
+                if char.arm_weapon_map then
+                    pcall(update_detected_weapon, char)
+                end
             else
                 char.status = "Not in scene"
                 char._transform = nil; char._joints = {}; char._dist_cache = {}; char._go_ref = nil; char._ik_item = nil
@@ -790,29 +877,24 @@ re.on_draw_ui(function()
 
                 -- Per-weapon distance thresholds (Leon only)
                 if char.weapon_distance_thresholds then
-                    if WeaponPoseFix then
-                        local weapon_order = { "Pistol", "Shotgun", "Grenade", "Melee", "Magnum", "SMG", "Sniper" }
-                        local current_weapon = WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name]
-                        imgui.separator()
-                        imgui.text("Per-Weapon Distance Threshold:")
-                        for _, wname in ipairs(weapon_order) do
-                            if char.weapon_distance_thresholds[wname] ~= nil then
-                                local label = (wname == current_weapon) and (wname .. " [active]") or wname
-                                local changed_wt, new_wt = imgui.slider_float(
-                                    label .. "##wdt_" .. char.name,
-                                    char.weapon_distance_thresholds[wname],
-                                    0.01, 0.5, "%.3f")
-                                if changed_wt then
-                                    char.weapon_distance_thresholds[wname] = new_wt
-                                    char._dist_cache = {}
-                                    save_char_config(char)
-                                end
+                    local weapon_order = { "Pistol", "Shotgun", "Grenade", "Melee", "Magnum", "SMG", "Sniper" }
+                    local current_weapon = (WeaponPoseFix and WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name])
+                                       or char._detected_weapon
+                    imgui.separator()
+                    imgui.text("Per-Weapon Distance Threshold:")
+                    for _, wname in ipairs(weapon_order) do
+                        if char.weapon_distance_thresholds[wname] ~= nil then
+                            local label = (wname == current_weapon) and (wname .. " [active]") or wname
+                            local changed_wt, new_wt = imgui.slider_float(
+                                label .. "##wdt_" .. char.name,
+                                char.weapon_distance_thresholds[wname],
+                                0.01, 0.5, "%.3f")
+                            if changed_wt then
+                                char.weapon_distance_thresholds[wname] = new_wt
+                                char._dist_cache = {}
+                                save_char_config(char)
                             end
                         end
-                    else
-                        imgui.separator()
-                        imgui.text_colored("Install 'WeaponPoseFix' script to unlock", 0xFF888888)
-                        imgui.text_colored("per-weapon distance thresholds.", 0xFF888888)
                     end
                 end
 
