@@ -165,7 +165,7 @@ local characters = {
         name = "Leon",
         go_name = "cp_A000",
         default_char_enabled = true,
-        default_distance_threshold = 0.07,
+        default_distance_threshold = 0.1,
         default_distance_interval = 0.1,
         default_distance_sustain = true,   -- Leon: Use distance detection to maintain IK
         default_conditions = {
@@ -174,10 +174,25 @@ local characters = {
                 -- Gun holding (L3.bank=10: covers idle/walk/run/aim and transition frames)
                 -- 排除非持枪状态 (L3.bank=10, mot=5000)
                 -- Exclude non-gun holding state (L3.bank=10, mot=5000)
+                -- 排除手枪/马格南（距离阈值接近0，由 weapon_distance_thresholds 控制）
+                checks = {
+                    { layer = 3, bank = 10 },
+                    -- { layer = 0, bank = 10, mot = 22, _invert = true },
+                    -- { layer = 4, bank = 10, mot = 5011, _invert = true },
+                },
+                weapons = { "Pistol", "Magnum" },
+            },
+            {
+                -- 手枪持握状态 (L3.bank=10: 包含站立/走/跑/瞄准及过渡帧)
+                -- Gun holding (L3.bank=10: covers idle/walk/run/aim and transition frames)
+                -- 排除非持枪状态 (L3.bank=10, mot=5000)
+                -- Exclude non-gun holding state (L3.bank=10, mot=5000)
+                -- 排除手枪/马格南（距离阈值接近0，由 weapon_distance_thresholds 控制）
                 checks = {
                     { layer = 3, bank = 10 },
                     { layer = 3, bank = 10, mot = 5000, _invert = true },
                 },
+                weapons_exclude = { "Pistol", "Magnum" },
             },
             {
                 -- 霰弹枪上膛、一发后；
@@ -185,14 +200,28 @@ local characters = {
                     { layer = 3, bank = 10, mot = 5000},
                     { layer = 4, bank = 10, mot = 5010},
                 },
+                -- weapons_exclude = { "None" },
+            },
+            {
+                checks = {
+                    { layer = 3, bank = 100 },
+                    -- { layer = 3, bank = 100, mot = 1200, _invert = true},
+                    -- { layer = 3, bank = 100, mot = 1201, _invert = true},
+                    -- { layer = 0, bank = 6, _invert = true},
+                },
+                weapons = { "Pistol", "Magnum" },
             },
             {
                 -- 待机过渡/切枪过渡/取消瞄准过渡/闲置检视动画等 (L3.bank=100)
                 -- Transition frames/Switch weapon frames/Cancel aiming frames/Idle inspection animation frames (L3.bank=100)
                 checks = {
                     { layer = 3, bank = 100 },
-                    { layer = 3, bank = 100, mot = 1200, _invert = true}
+                    { layer = 3, bank = 100, mot = 1200, _invert = true},
+                    { layer = 3, bank = 100, mot = 1201, _invert = true},
+                    { layer = 3, bank = 100, mot = 1311, _invert = true},
+                    { layer = 0, bank = 6, _invert = true},
                 },
+                weapons_exclude = { "Pistol", "Magnum" },
             },
             -- {
             --     -- 冲突组: 持枪/非持枪通用，靠距离检测区分
@@ -228,14 +257,17 @@ local characters = {
         default_kill_conditions = {
             { { layer = 5, bank = 0, _invert = true } },  -- 手电筒 flashlight
             { { layer = 5, mot = 6102 } },                 -- 治疗针/切武器 syringe/switch weapon
-            { { layer = 3, bank = 0, mot = "invalid" } }   -- 过场动画 cutscene
+            { { layer = 3, bank = 0, mot = "invalid" } },   -- 过场动画 cutscene
+            { { layer = 0, bank = 10, mot = 22} }, -- 面对敌人时冲刺 run for enemy
+            { { layer = 0, bank = 6} }, -- 也许是体技？
+            { { layer = 3, bank = 5} },        -- 单手动作？ open door
         },
         default_weapon_distance_thresholds = {
-            Pistol  = 0.07,
+            Pistol  = 0.1,
             Shotgun = 0.327,
             Grenade = 0.0,
             Melee   = 0.0,
-            Magnum  = 0.07,
+            Magnum  = 0.1,
             SMG     = 0.275,
             Sniper  = 0.327,
         },
@@ -249,7 +281,7 @@ local characters = {
             { prefix = "arm06", label = "Sniper"  },
         },
         char_enabled = true,
-        distance_threshold = 0.07,
+        distance_threshold = 0.1,
         distance_interval = 0.1,
         distance_sustain = true,
         weapon_distance_thresholds = nil,  -- populated by load_char_config
@@ -431,6 +463,14 @@ local function match_check(ld, check)
     return match
 end
 
+local function get_current_weapon(char)
+    if WeaponPoseFix and WeaponPoseFix.active_weapon then
+        local w = WeaponPoseFix.active_weapon[char.name]
+        if w then return w end
+    end
+    return char._detected_weapon or "None"
+end
+
 local function match_condition_groups(layers, groups)
     if not layers or not groups then return false end
     for _, group in ipairs(groups) do
@@ -445,7 +485,7 @@ local function match_condition_groups(layers, groups)
     return false
 end
 
-local function match_conditions(layers, conditions)
+local function match_conditions(layers, conditions, char)
     if not layers or not conditions then return nil end
     for _, group in ipairs(conditions) do
         local checks = group.checks or group
@@ -453,6 +493,24 @@ local function match_conditions(layers, conditions)
         for _, check in ipairs(checks) do
             if not match_check(layers[check.layer], check) then
                 group_match = false; break
+            end
+        end
+        if group_match then
+            -- 武器白名单过滤：weapons = {"Shotgun", ...} 只在这些武器时生效（"None" 表示无武器）
+            if group.weapons then
+                local weapon = char and get_current_weapon(char)
+                local found = false
+                for _, w in ipairs(group.weapons) do
+                    if w == weapon then found = true; break end
+                end
+                if not found then group_match = false end
+            end
+            -- 武器黑名单过滤：weapons_exclude = {"Pistol", ...} 排除这些武器（"None" 表示无武器）
+            if group_match and group.weapons_exclude then
+                local weapon = char and get_current_weapon(char)
+                for _, w in ipairs(group.weapons_exclude) do
+                    if w == weapon then group_match = false; break end
+                end
             end
         end
         if group_match then return group end
@@ -650,7 +708,7 @@ local function check_conditional(char, go)
     end
 
     -- Match enable conditions
-    local matched_group = match_conditions(layers, char.conditions)
+    local matched_group = match_conditions(layers, char.conditions, char)
     local active = matched_group ~= nil
     local dist_info = ""
 
@@ -823,6 +881,12 @@ local function conditions_string(conditions)
                 c.mot  ~= nil and tostring(c.mot)  or "*"))
         end
         local suffix = group.distance_check and " [dist]" or ""
+        if group.weapons then
+            suffix = suffix .. " [only:" .. table.concat(group.weapons, ",") .. "]"
+        end
+        if group.weapons_exclude then
+            suffix = suffix .. " [excl:" .. table.concat(group.weapons_exclude, ",") .. "]"
+        end
         table.insert(groups, "(" .. table.concat(parts, " AND ") .. ")" .. suffix)
     end
     return table.concat(groups, "\n  OR ")
@@ -899,6 +963,7 @@ re.on_draw_ui(function()
                 end
 
                 if cfg.debug then
+                    imgui.text("Weapon: " .. get_current_weapon(char))
                     imgui.text("Enable:\n  " .. conditions_string(char.conditions))
                     imgui.text("Kill: " .. kill_conditions_string(char.kill_conditions))
                     imgui.text(string.format("Config: %s", char.config_source))
