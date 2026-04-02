@@ -279,7 +279,7 @@ local characters = {
             Magnum  = 0.96,
             SMG     = 0.69,
             Sniper  = 0.69,
-            None    = 0.0,
+            None    = 1.0,
         },
         arm_weapon_map = {
             { prefix = "arm00", label = "Pistol"  },
