@@ -192,7 +192,7 @@ local characters = {
                     { layer = 3, bank = 10 },
                     { layer = 3, bank = 10, mot = 5000, _invert = true },
                 },
-                weapons_exclude = { "Pistol", "Magnum" },
+                weapons_exclude = { "Pistol", "Magnum", "Melee", "Grenade"},
             },
             {
                 -- 霰弹枪上膛、一发后；
@@ -271,6 +271,16 @@ local characters = {
             SMG     = 0.275,
             Sniper  = 0.327,
         },
+        default_weapon_ik_weights = {
+            Pistol  = 0.96,
+            Shotgun = 0.69,
+            Grenade = 0.0,
+            Melee   = 0.96,
+            Magnum  = 0.96,
+            SMG     = 0.69,
+            Sniper  = 0.69,
+            None    = 1.0,
+        },
         arm_weapon_map = {
             { prefix = "arm00", label = "Pistol"  },
             { prefix = "arm01", label = "Shotgun" },
@@ -285,12 +295,14 @@ local characters = {
         distance_interval = 0.1,
         distance_sustain = true,
         weapon_distance_thresholds = nil,  -- populated by load_char_config
+        weapon_ik_weights = nil,           -- populated by load_char_config
         conditions = nil, kill_conditions = nil,
         status = "Waiting...", fix_count = 0, ik_forced = false, active_condition_str = "None",
         config_source = "default",
         _transform = nil, _joints = {}, _dist_cache = {}, _go_ref = nil,
         _ik_item = nil, _layer_cache = {}, _layer_count = 0,
-        _arm_cache = nil, _weapon_check_time = -999, _detected_weapon = nil
+        _arm_cache = nil, _weapon_check_time = -999, _detected_weapon = nil,
+        _mul_blend_rate = nil
     },
 }
 
@@ -343,6 +355,21 @@ local function load_char_config(char)
                 end
             end
         end
+        if data.weapon_ik_weights ~= nil then
+            if not char.weapon_ik_weights and char.default_weapon_ik_weights then
+                char.weapon_ik_weights = {}
+                for k, v in pairs(char.default_weapon_ik_weights) do
+                    char.weapon_ik_weights[k] = v
+                end
+            end
+            if char.weapon_ik_weights then
+                for k, v in pairs(data.weapon_ik_weights) do
+                    if type(v) == "number" then
+                        char.weapon_ik_weights[k] = v
+                    end
+                end
+            end
+        end
         char.config_source = filename
         log.info(string.format("[IK Fix] Config loaded for %s from %s", char.name, filename))
     else
@@ -358,6 +385,12 @@ local function load_char_config(char)
                 char.weapon_distance_thresholds[k] = v
             end
         end
+        if char.default_weapon_ik_weights then
+            char.weapon_ik_weights = {}
+            for k, v in pairs(char.default_weapon_ik_weights) do
+                char.weapon_ik_weights[k] = v
+            end
+        end
         char.config_source = "default"
     end
     if not char.conditions then char.conditions = char.default_conditions end
@@ -366,6 +399,12 @@ local function load_char_config(char)
         char.weapon_distance_thresholds = {}
         for k, v in pairs(char.default_weapon_distance_thresholds) do
             char.weapon_distance_thresholds[k] = v
+        end
+    end
+    if not char.weapon_ik_weights and char.default_weapon_ik_weights then
+        char.weapon_ik_weights = {}
+        for k, v in pairs(char.default_weapon_ik_weights) do
+            char.weapon_ik_weights[k] = v
         end
     end
 end
@@ -378,6 +417,7 @@ local function save_char_config(char)
         distance_interval = char.distance_interval,
         distance_sustain = char.distance_sustain,
         weapon_distance_thresholds = char.weapon_distance_thresholds,
+        weapon_ik_weights = char.weapon_ik_weights,
         conditions = char.conditions,
         kill_conditions = char.kill_conditions,
     })
@@ -600,6 +640,7 @@ local function ensure_transform(char, go)
     if char._go_ref and char._go_ref ~= go then
         char._transform = nil; char._joints = {}; char._dist_cache = {}; char._ik_item = nil
         char._arm_cache = nil; char._detected_weapon = nil
+        char._mul_blend_rate = nil
     end
     char._go_ref = go
     if char._transform then
@@ -651,6 +692,45 @@ local function check_distance(char, go, group_id)
     local result = dist < get_active_threshold(char)
     char._dist_cache[group_id] = { time = now, distance = dist, result = result }
     return result, dist
+end
+
+------------------------------------------------------
+-- Core: Per-weapon IK weight (MulBlendRate.TargetBlendRate)
+------------------------------------------------------
+local function get_active_ik_weight(char)
+    if char.weapon_ik_weights then
+        local weapon = get_current_weapon(char)
+        if char.weapon_ik_weights[weapon] ~= nil then
+            return char.weapon_ik_weights[weapon]
+        end
+    end
+    return 1.0
+end
+
+local function get_mul_blend_rate(char, item)
+    if char._mul_blend_rate then
+        local ok = pcall(char._mul_blend_rate.get_address, char._mul_blend_rate)
+        if ok then return char._mul_blend_rate end
+        char._mul_blend_rate = nil
+    end
+    local ok, td = pcall(item.get_type_definition, item)
+    if not ok or not td then return nil end
+    local f = td:get_field("MulBlendRate")
+    if not f then return nil end
+    local ok2, mbr = pcall(f.get_data, f, item)
+    if not ok2 or not mbr then return nil end
+    char._mul_blend_rate = mbr
+    return mbr
+end
+
+local OFFSET_TARGET_BLEND_RATE = 0x10  -- TargetBlendRate in anim.BlendParam
+local OFFSET_BLEND_RATE        = 0x14  -- BlendRate in anim.BlendParam
+
+local function set_ik_weight(char, item, weight)
+    local mbr = get_mul_blend_rate(char, item)
+    if not mbr then return end
+    pcall(mbr.write_float, mbr, OFFSET_TARGET_BLEND_RATE, weight)
+    pcall(mbr.write_float, mbr, OFFSET_BLEND_RATE, weight)
 end
 
 ------------------------------------------------------
@@ -794,6 +874,8 @@ local function check_conditional(char, go)
         local changed = set_ik_state(item, 1, 0)
         if changed then char.fix_count = char.fix_count + 1 end
         char.ik_forced = true
+        -- 写入当前武器对应的 LRWeight
+        set_ik_weight(char, item, get_active_ik_weight(char))
         if char.weapon_distance_thresholds and WeaponPoseFix then
             local w = WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name]
             if w then char._last_weapon = w end
@@ -802,6 +884,7 @@ local function check_conditional(char, go)
     else
         if char.ik_forced then
             set_ik_state(item, 0, 1)
+            set_ik_weight(char, item, 0.0)
             char.ik_forced = false
             char._last_weapon = nil
         end
@@ -956,6 +1039,32 @@ re.on_draw_ui(function()
                             if changed_wt then
                                 char.weapon_distance_thresholds[wname] = new_wt
                                 char._dist_cache = {}
+                                save_char_config(char)
+                            end
+                        end
+                    end
+                end
+
+                -- Per-weapon IK weights (Leon only)
+                if char.weapon_ik_weights then
+                    local weapon_order = { "Pistol", "Shotgun", "Grenade", "Melee", "Magnum", "SMG", "Sniper", "None" }
+                    local current_weapon = (WeaponPoseFix and WeaponPoseFix.active_weapon and WeaponPoseFix.active_weapon[char.name])
+                                       or char._detected_weapon or "None"
+                    imgui.separator()
+                    imgui.text("Per-Weapon IK Weight (LRWeight):")
+                    for _, wname in ipairs(weapon_order) do
+                        if char.weapon_ik_weights[wname] ~= nil then
+                            local label = (wname == current_weapon) and (wname .. " [active]") or wname
+                            local changed_iw, new_iw = imgui.slider_float(
+                                label .. "##ikw_" .. char.name,
+                                char.weapon_ik_weights[wname],
+                                0.0, 1.0, "%.2f")
+                            if changed_iw then
+                                char.weapon_ik_weights[wname] = new_iw
+                                -- 如果 IK 当前开着，实时更新
+                                if char.ik_forced and char._ik_item then
+                                    set_ik_weight(char, char._ik_item, new_iw)
+                                end
                                 save_char_config(char)
                             end
                         end
