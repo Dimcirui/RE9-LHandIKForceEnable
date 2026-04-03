@@ -217,7 +217,7 @@ local characters = {
                 --长枪
                 checks = {
                     { layer = 3, bank = 10 },
-                    { layer = 7, bank = 100 },
+                    { layer = 7, bank = 100 },  --这个是瞄准
                 },
                 -- distance_check = true,
                 weapons_exclude = { "Pistol", "Magnum", "Melee", "Grenade"},
