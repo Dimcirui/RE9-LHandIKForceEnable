@@ -167,43 +167,11 @@ local characters = {
         default_char_enabled = true,
         default_distance_threshold = 0.1,
         default_distance_interval = 0.1,
-        default_distance_sustain = true,   -- Leon: Use distance detection to maintain IK
+        default_distance_sustain = false,   -- Leon: Use distance detection to maintain IK
         default_conditions = {
+            
             {
-                -- 手枪持握状态 (L3.bank=10: 包含站立/走/跑/瞄准及过渡帧)
-                -- Gun holding (L3.bank=10: covers idle/walk/run/aim and transition frames)
-                -- 排除非持枪状态 (L3.bank=10, mot=5000)
-                -- Exclude non-gun holding state (L3.bank=10, mot=5000)
-                -- 排除手枪/马格南（距离阈值接近0，由 weapon_distance_thresholds 控制）
-                checks = {
-                    { layer = 3, bank = 10 },
-                    -- { layer = 0, bank = 10, mot = 22, _invert = true },
-                    -- { layer = 4, bank = 10, mot = 5011, _invert = true },
-                },
-                weapons = { "Pistol", "Magnum" },
-            },
-            {
-                -- 手枪持握状态 (L3.bank=10: 包含站立/走/跑/瞄准及过渡帧)
-                -- Gun holding (L3.bank=10: covers idle/walk/run/aim and transition frames)
-                -- 排除非持枪状态 (L3.bank=10, mot=5000)
-                -- Exclude non-gun holding state (L3.bank=10, mot=5000)
-                -- 排除手枪/马格南（距离阈值接近0，由 weapon_distance_thresholds 控制）
-                checks = {
-                    { layer = 3, bank = 10 },
-                    { layer = 3, bank = 10, mot = 5000, _invert = true },
-                },
-                weapons_exclude = { "Pistol", "Magnum", "Melee", "Grenade"},
-            },
-            {
-                -- 霰弹枪上膛、一发后；
-                checks = {
-                    { layer = 3, bank = 10, mot = 5000},
-                    { layer = 4, bank = 10, mot = 5010},
-                },
-                -- weapons_exclude = { "None" },
-            },
-            {
-                checks = {
+                checks = {                                                      -- 一个简单手枪持枪过渡
                     { layer = 3, bank = 100 },
                     -- { layer = 3, bank = 100, mot = 1200, _invert = true},
                     -- { layer = 3, bank = 100, mot = 1201, _invert = true},
@@ -211,6 +179,51 @@ local characters = {
                 },
                 weapons = { "Pistol", "Magnum" },
             },
+
+            -- {
+            --     checks = {                                                      -- 落地后持枪手枪持枪过渡
+            --         { layer = 3, bank = 0， mot = 3 },
+            --         -- { layer = 3, bank = 100, mot = 1200, _invert = true},
+            --         -- { layer = 3, bank = 100, mot = 1201, _invert = true},
+            --         -- { layer = 0, bank = 6, _invert = true},
+            --     },
+            --     weapons = { "Pistol", "Magnum" },
+            -- },
+
+            {
+                -- 手枪持握状态 (L3.bank=10: 包含站立/走/跑/瞄准及过渡帧)
+                -- Gun holding (L3.bank=10: covers idle/walk/run/aim and transition frames)
+                -- 排除非持枪状态 (L3.bank=10, mot=5000)
+                -- Exclude non-gun holding state (L3.bank=10, mot=5000)
+                -- 排除手枪/马格南（距离阈值接近0，由 weapon_distance_thresholds 控制）
+                -- checks = {
+                --     { layer = 3, bank = 10 },
+                --     -- { layer = 0, bank = 10, mot = 22, _invert = true },
+                --     -- { layer = 4, bank = 10, mot = 5011, _invert = true },
+                -- },
+                distance_check = true,
+                weapons = { "Pistol", "Magnum" },
+            },
+
+            {
+                -- 霰弹枪上膛、一发后；
+                checks = {
+                    { layer = 8, bank = 100 },
+                },
+                -- weapons_exclude = { "None" },
+            },
+
+            {
+                --长枪
+                checks = {
+                    { layer = 3, bank = 10 },
+                    { layer = 7, bank = 100 },
+                },
+                -- distance_check = true,
+                weapons_exclude = { "Pistol", "Magnum", "Melee", "Grenade"},
+            },
+            
+
             {
                 -- 待机过渡/切枪过渡/取消瞄准过渡/闲置检视动画等 (L3.bank=100)
                 -- Transition frames/Switch weapon frames/Cancel aiming frames/Idle inspection animation frames (L3.bank=100)
@@ -221,7 +234,14 @@ local characters = {
                     { layer = 3, bank = 100, mot = 1311, _invert = true},
                     { layer = 0, bank = 6, _invert = true},
                 },
-                weapons_exclude = { "Pistol", "Magnum" },
+                weapons_exclude = { "Pistol", "Magnum", "Melee"},
+            },
+            {
+                checks = {
+                    {layer = 3, bank = 100, mot = 1141},        --磨刀
+                },
+
+                weapons = { "Melee" },
             },
             -- {
             --     -- 冲突组: 持枪/非持枪通用，靠距离检测区分
@@ -263,7 +283,7 @@ local characters = {
             { { layer = 3, bank = 5} },        -- 单手动作？ open door
         },
         default_weapon_distance_thresholds = {
-            Pistol  = 0.1,
+            Pistol  = 0.15,
             Shotgun = 0.327,
             Grenade = 0.0,
             Melee   = 0.0,
@@ -293,7 +313,7 @@ local characters = {
         char_enabled = true,
         distance_threshold = 0.1,
         distance_interval = 0.1,
-        distance_sustain = true,
+        distance_sustain = false,
         weapon_distance_thresholds = nil,  -- populated by load_char_config
         weapon_ik_weights = nil,           -- populated by load_char_config
         conditions = nil, kill_conditions = nil,
@@ -470,7 +490,7 @@ local function get_layer_data(char, go)
     local lc = motion:call("getLayerCount")
     if not lc then return nil end
     
-    local limit = math.min(lc - 1, 7)
+    local limit = math.min(lc - 1, 8)
     char._layer_count = limit
     
     for i = 0, limit do
