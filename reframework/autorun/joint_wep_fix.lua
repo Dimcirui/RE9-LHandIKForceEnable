@@ -23,14 +23,12 @@ local characters = {
         joints  = {
             { name = "R_Wep",
               off_x = 0.0, off_y = 0.0, off_z = 0.0,
-              base_x = nil, base_y = nil, base_z = nil,
-              threshold = 0.05,
-              _joint = nil, _cur_pos = nil },
+              _joint = nil, _cur_pos = nil,
+              _last_anim = nil, _last_target = nil },
             { name = "L_Wep",
               off_x = 0.0, off_y = 0.0, off_z = 0.0,
-              base_x = nil, base_y = nil, base_z = nil,
-              threshold = 0.05,
-              _joint = nil, _cur_pos = nil },
+              _joint = nil, _cur_pos = nil,
+              _last_anim = nil, _last_target = nil },
         },
         flashlight = {
             _joint       = nil,
@@ -103,9 +101,7 @@ local function save_config(char)
     local jdata = {}
     for _, j in ipairs(char.joints) do
         jdata[j.name] = {
-            x = j.off_x, y = j.off_y, z = j.off_z,
-            base_x = j.base_x, base_y = j.base_y, base_z = j.base_z,
-            threshold = j.threshold,
+            x = j.off_x, y = j.off_y, z = j.off_z
         }
     end
     local fl = char.flashlight
@@ -128,10 +124,6 @@ local function load_config(char)
                     j.off_x     = type(d.x)         == "number" and d.x         or j.off_x
                     j.off_y     = type(d.y)         == "number" and d.y         or j.off_y
                     j.off_z     = type(d.z)         == "number" and d.z         or j.off_z
-                    j.base_x    = type(d.base_x)    == "number" and d.base_x    or j.base_x
-                    j.base_y    = type(d.base_y)    == "number" and d.base_y    or j.base_y
-                    j.base_z    = type(d.base_z)    == "number" and d.base_z    or j.base_z
-                    j.threshold = type(d.threshold) == "number" and d.threshold or j.threshold
                 end
             end
         end
@@ -314,57 +306,42 @@ local function update_weapon(char)
     local t = char._transform
     if not t then return end
 
-    -- 构建 arm 缓存
-    if not char._arm_cache then
-        local arms = {}
-        local ok, child = pcall(function() return t:call("get_Child") end)
-        if ok and child then
-            while child do
-                local ok2, cgo = pcall(function() return child:call("get_GameObject") end)
-                if ok2 and cgo then
-                    local ok3, n = pcall(function() return cgo:call("get_Name") end)
-                    if ok3 and n and n:sub(1, 3) == "arm" then
-                        table.insert(arms, { name = n, go = cgo, transform = child })
-                    end
-                end
-                local ok4, nx = pcall(function() return child:call("get_Next") end)
-                if not ok4 or not nx then break end
-                child = nx
-            end
-        end
-        char._arm_cache = arms
-    end
-
-    -- 检测当前持握武器
+    -- 不使用永久缓存，而是动态遍历，防止武器节点晚于脚本读取时生成
     local detected = nil
-    for _, arm in ipairs(char._arm_cache) do
-        for _, rule in ipairs(char.arm_weapon_map) do
-            if arm.name:sub(1, #rule.prefix) == rule.prefix then
-                local draw_self = false
-                local ok1 = pcall(function() draw_self = arm.go:call("get_DrawSelf") end)
-                if not ok1 then
-                    char._arm_cache = nil
-                    return
-                end
-                if draw_self then
-                    local pos   = nil
-                    local ok2   = pcall(function() pos = arm.transform:call("get_LocalPosition") end)
-                    if not ok2 then
-                        char._arm_cache = nil
-                        return
+    local active_arm = nil
+    local ok, child = pcall(function() return t:call("get_Child") end)
+    if ok and child then
+        while child do
+            local go_ok, cgo = pcall(function() return child:call("get_GameObject") end)
+            if go_ok and cgo then
+                local n_ok, n = pcall(function() return cgo:call("get_Name") end)
+                if n_ok and n and n:sub(1, 3) == "arm" then
+                    for _, rule in ipairs(char.arm_weapon_map) do
+                        if n:sub(1, #rule.prefix) == rule.prefix then
+                            local draw_self = false
+                            pcall(function() draw_self = cgo:call("get_DrawSelf") end)
+                            if draw_self then
+                                local pos = nil
+                                pcall(function() pos = child:call("get_LocalPosition") end)
+                                if pos 
+                                   and math.abs(pos.x) < IN_HAND_THRESHOLD
+                                   and math.abs(pos.y) < IN_HAND_THRESHOLD
+                                   and math.abs(pos.z) < IN_HAND_THRESHOLD then
+                                    detected = rule.label
+                                    active_arm = child
+                                end
+                            end
+                            break
+                        end
                     end
-                    if pos
-                        and math.abs(pos.x) < IN_HAND_THRESHOLD
-                        and math.abs(pos.y) < IN_HAND_THRESHOLD
-                        and math.abs(pos.z) < IN_HAND_THRESHOLD
-                    then
-                        detected = rule.label
-                    end
                 end
-                break
             end
+            if detected then break end
+            
+            local n_ok, nx = pcall(function() return child:call("get_Next") end)
+            if not n_ok or not nx then break end
+            child = nx
         end
-        if detected then break end
     end
 
     char._detected_weapon               = detected
@@ -431,30 +408,39 @@ re.on_pre_application_entry("PrepareRendering", function()
             local written = false
 
             for _, j in ipairs(char.joints) do
-                if joint_ok(j._joint) and j.base_x ~= nil then
-                    local tx = j.base_x + j.off_x
-                    local ty = j.base_y + j.off_y
-                    local tz = j.base_z + j.off_z
-                    local thr = j.threshold
-
+                if joint_ok(j._joint) then
                     local cur = nil
                     pcall(function() cur = j._joint:call("get_LocalPosition") end)
                     if cur then
-                        -- 靠近自然位置（相对静止）或曾经写入过的 target 位置
-                        local near_base = math.abs(cur.x - j.base_x) < thr
-                                      and math.abs(cur.y - j.base_y) < thr
-                                      and math.abs(cur.z - j.base_z) < thr
-                        local near_target = math.abs(cur.x - tx) < thr
-                                        and math.abs(cur.y - ty) < thr
-                                        and math.abs(cur.z - tz) < thr
+                        local anim_pos
+                        local lt = j._last_target
+                        local la = j._last_anim
+                        local NEAR = 0.0002
 
-                        if near_base or near_target then
-                            pcall(function()
-                                j._joint:call("set_LocalPosition", Vector3f.new(tx, ty, tz))
-                            end)
-                            written = true
+                        -- 如果当前读到的坐标等于我们上一帧写入的 target，说明动画系统这一帧没重置它
+                        -- 我们就继续沿用上一帧记录的原始动画坐标 (la)
+                        if lt and la
+                           and math.abs(cur.x - lt.x) < NEAR
+                           and math.abs(cur.y - lt.y) < NEAR
+                           and math.abs(cur.z - lt.z) < NEAR then
+                            anim_pos = la
+                        else
+                            -- 否则说明动画系统更新了这一帧的新坐标（我们要抓取并保存它作为最新的动画坐标）
+                            anim_pos = { x = cur.x, y = cur.y, z = cur.z }
                         end
-                        -- else: 动画公远的位置（如换弹），跳过，不干扰
+                        
+                        local tx = anim_pos.x + j.off_x
+                        local ty = anim_pos.y + j.off_y
+                        local tz = anim_pos.z + j.off_z
+
+                        pcall(function()
+                            j._joint:call("set_LocalPosition", Vector3f.new(tx, ty, tz))
+                        end)
+
+                        j._last_anim   = anim_pos
+                        j._last_target = { x = tx, y = ty, z = tz }
+                        j._cur_pos     = cur
+                        written = true
                     end
                 else
                     if not joint_ok(j._joint) then j._joint = nil end
@@ -535,12 +521,11 @@ re.on_draw_ui(function()
 
                 local joint_status = joint_ok(j._joint) and "  [OK]" or "  [NOT FOUND]"
                 imgui.text(j.name .. joint_status)
-                if j.base_x then
-                    imgui.text(string.format("  Base  : (%.4f, %.4f, %.4f)", j.base_x, j.base_y, j.base_z))
-                    imgui.text(string.format("  Target: (%.4f, %.4f, %.4f)",
-                        j.base_x+j.off_x, j.base_y+j.off_y, j.base_z+j.off_z))
+                if j._last_anim then
+                    imgui.text(string.format("  Anim  : (%.4f, %.4f, %.4f)", j._last_anim.x, j._last_anim.y, j._last_anim.z))
+                    imgui.text(string.format("  Target: (%.4f, %.4f, %.4f)", j._last_target.x, j._last_target.y, j._last_target.z))
                 else
-                    imgui.text("  Base: not captured yet (will auto-capture)")
+                    imgui.text("  Anim: tracking...")
                 end
                 if j._cur_pos then
                     imgui.text(string.format("  Cur   : (%.4f, %.4f, %.4f)",
