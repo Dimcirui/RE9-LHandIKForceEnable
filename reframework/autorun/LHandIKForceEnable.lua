@@ -22,7 +22,7 @@
 --     distance_check = use distance verification for this group (Grace conflict groups).
 --   kill_conditions: array of groups (OR of AND). Immediate disable, highest priority.
 --   distance_sustain: when true, if IK is already ON but no condition matches,
---     use distance check to decide whether to maintain IK (Leon's mode).
+--     use distance check to decide whether to maintain IK (Leon's mode). 
 
 local CONFIG_DIR = "LHandIKFix/"
 local OFFSET_ENABLE = 16
