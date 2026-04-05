@@ -22,7 +22,7 @@
 --     distance_check = use distance verification for this group (Grace conflict groups).
 --   kill_conditions: array of groups (OR of AND). Immediate disable, highest priority.
 --   distance_sustain: when true, if IK is already ON but no condition matches,
---     use distance check to decide whether to maintain IK (Leon's mode).
+--     use distance check to decide whether to maintain IK (Leon's mode). 
 
 local CONFIG_DIR = "LHandIKFix/"
 local OFFSET_ENABLE = 16
@@ -904,9 +904,13 @@ local function check_conditional(char, go)
     else
         if char.ik_forced then
             set_ik_state(item, 0, 1)
-            set_ik_weight(char, item, 0.0)
             char.ik_forced = false
             char._last_weapon = nil
+        end
+        -- 即使 IK 处于 OFF 状态，只要有 weapon_ik_weights 配置，也持续写入当前 weight
+        -- 这样 blendrate 滑条的调节无论 distance_sustain 是否启用都能即时生效
+        if char.weapon_ik_weights then
+            set_ik_weight(char, item, get_active_ik_weight(char))
         end
         char.status = "Idle, IK OFF" .. dist_info
     end
@@ -1081,8 +1085,8 @@ re.on_draw_ui(function()
                                 0.0, 1.0, "%.2f")
                             if changed_iw then
                                 char.weapon_ik_weights[wname] = new_iw
-                                -- 如果 IK 当前开着，实时更新
-                                if char.ik_forced and char._ik_item then
+                                -- 只要 IK item 存在就实时更新，不管 IK 是否强制开启
+                                if char._ik_item then
                                     set_ik_weight(char, char._ik_item, new_iw)
                                 end
                                 save_char_config(char)
